@@ -52,11 +52,14 @@ jobs:
           done
           ls -d bundle-*
 
+      # docker/login-action geeft username (met '$' in robot-naam) veilig door
+      # zonder shell-expansie — raw `docker login` zou $penpot expanderen.
       - name: Log in to Harbor
-        run: |
-          echo "${{ secrets.HARBOR_PASSWORD }}" \
-            | docker login "${{ secrets.HARBOR_REGISTRY }}" \
-                -u "${{ secrets.HARBOR_USERNAME }}" --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Build & push images -> Harbor
         working-directory: docker/images
