@@ -1,0 +1,77 @@
+# ============================================================================
+# CI: Penpot FROM SOURCE -> Harbor  (PENPOT.1 / Doel 22)
+# Twee-traps: (1) bundles bouwen via devenv (CLJS + Rust/WASM + uberjar),
+# (2) bundles stagen -> docker/images/build.sh per image -> push naar Harbor.
+# Vereist repo-secrets: HARBOR_REGISTRY / HARBOR_USERNAME / HARBOR_PASSWORD.
+# Runner: self-hosted [p920] (Tailnet-toegang tot Harbor).
+# ============================================================================
+name: penpot-build-harbor
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref (tag/branch) om from-source te bouwen"
+        required: true
+        default: "v-penpot-fork-point-2026-06-16"
+      image_tag:
+        description: "Harbor image-tag (geen 'latest')"
+        required: true
+        default: "fork-2026-06-16"
+
+jobs:
+  build-and-push:
+    runs-on: [self-hosted, p920]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_ref }}
+          fetch-depth: 0   # tags nodig voor print-current-version
+
+      - name: Build bundles from source (devenv -> CLJS + Rust/WASM + uberjar)
+        env:
+          BUILD_WASM: "yes"
+          BUILD_STORYBOOK: "no"
+        run: |
+          set -euxo pipefail
+          ./manage.sh build-frontend-bundle
+          ./manage.sh build-backend-bundle
+          ./manage.sh build-exporter-bundle
+          ./manage.sh build-mcp-bundle
+          ls -la bundles/
+
+      - name: Stage bundles for image build
+        run: |
+          set -euxo pipefail
+          cd docker/images
+          for m in backend frontend exporter mcp; do
+            rm -rf "bundle-$m"
+            cp -r "../../bundles/$m" "bundle-$m"
+          done
+          ls -d bundle-*
+
+      - name: Log in to Harbor
+        run: |
+          echo "${{ secrets.HARBOR_PASSWORD }}" \
+            | docker login "${{ secrets.HARBOR_REGISTRY }}" \
+                -u "${{ secrets.HARBOR_USERNAME }}" --password-stdin
+
+      - name: Build & push images -> Harbor
+        working-directory: docker/images
+        env:
+          PENPOT_DOCKER_NAMESPACE: "${{ secrets.HARBOR_REGISTRY }}/penpot"
+          PENPOT_BUILD_VERSION: "${{ github.event.inputs.image_tag }}"
+          PENPOT_BUILD_PLATFORM: "linux/amd64"
+        run: |
+          set -euxo pipefail
+          for m in backend frontend exporter mcp; do
+            echo "::group::image $m"
+            ./build.sh "$m"
+            echo "::endgroup::"
+          done
+
+      - name: Logout
+        if: always()
+        run: docker logout "${{ secrets.HARBOR_REGISTRY }}" || true
